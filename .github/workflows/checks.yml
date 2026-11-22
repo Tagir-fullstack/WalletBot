@@ -1,0 +1,70 @@
+name: Checks
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: walletbot
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: walletbot_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://walletbot:test-only-password@localhost:5432/walletbot_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - run: python -m compileall -q api config.py handlers keyboards main.py scripts utils
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VERCEL_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: walletbot-production
+      cancel-in-progress: false
+    environment: production
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+      BOT_PUBLIC_URL: ${{ vars.BOT_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r requirements.txt
+      - name: Verify required deployment configuration
+        run: |
+          for key in VERCEL_ORG_ID VERCEL_PROJECT_ID VERCEL_TOKEN BOT_TOKEN DATABASE_URL WEBHOOK_SECRET BOT_PUBLIC_URL; do
+            if [ -z "${!key}" ]; then echo "Missing configuration: $key"; exit 1; fi
+          done
+      - name: Apply additive database schema
+        run: python -m scripts.migrate
+      - name: Deploy to Vercel
+        run: npx --yes vercel@66.6.0 deploy --prod --yes --token "$VERCEL_TOKEN"
+      - name: Register Telegram webhook on the stable production domain
+        run: python -m scripts.webhook set --url "$BOT_PUBLIC_URL"
+      - name: Check Telegram webhook
+        run: python -m scripts.webhook info

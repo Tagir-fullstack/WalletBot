@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/webhook.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{.venv/**,.env*,.idea/**,tests/**,.github/**}"
+    }
+  },
+  "rewrites": [{"source": "/", "destination": "/api/webhook"}]
+}
