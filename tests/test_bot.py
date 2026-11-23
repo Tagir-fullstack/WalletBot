@@ -94,6 +94,51 @@ class ConversationTests(unittest.TestCase):
         Conversation(self.db, SETTINGS).run(callback=f'flow:{nonce}:confirm')
         self.assertEqual(len(self.db.rows), 1)
 
+    def test_saved_message_has_no_menu_and_balance_keeps_menu(self):
+        self.prepare_expense()
+        responses = self.click('confirm')
+        self.assertEqual(responses[0], {'text': '✅ Операция #1 сохранена.'})
+        self.assertIn('Баланс:', responses[1]['text'])
+        self.assertIn('inline_keyboard', responses[1]['reply_markup'])
+
+    def test_bank_selection_in_regular_and_quick_income(self):
+        for command, account in [('/income', 'kaspi'), ('+2000 Зарплата', 'halyk')]:
+            with self.subTest(account=account):
+                responses = self.run_message(command)
+                if command == '/income':
+                    responses = self.run_message('1000')
+                buttons = responses[0]['reply_markup']['inline_keyboard']
+                labels = [button['text'] for row in buttons for button in row]
+                self.assertIn('Kaspi', labels)
+                self.assertIn('Halyk', labels)
+                self.click('account:' + account)
+                responses = self.click('category:0')
+                if self.db.data['step'] == 'description':
+                    responses = self.click('skip')
+                self.assertIn('Счёт: ' + ('Kaspi' if account == 'kaspi' else 'Halyk'), responses[0]['text'])
+                self.click('confirm')
+                self.assertEqual(self.db.rows[-1]['account'], account)
+        balance = self.run_message('/balance')[0]['text']
+        self.assertIn('Kaspi: 1 000,00', balance)
+        self.assertIn('Halyk: 2 000,00', balance)
+
+    def test_bank_expense_and_legacy_card_remain_separate(self):
+        self.prepare_expense()
+        self.click('confirm')
+        for account in ('kaspi', 'halyk'):
+            self.run_message('-250 Покупки')
+            self.click('account:' + account)
+            self.click('category:0')
+            self.click('confirm')
+        balance = self.run_message('/balance')[0]['text']
+        self.assertIn('Карта (без банка): -1 500,00', balance)
+        self.assertIn('Kaspi: -250,00', balance)
+        self.assertIn('Halyk: -250,00', balance)
+        self.assertIn('Баланс: -2 000,00', balance)
+        history = self.run_message('/history')[0]['text']
+        for label in ('Kaspi', 'Halyk', 'Карта (без банка)'):
+            self.assertIn(label, history)
+
     def test_invalid_amount_keeps_step_and_cancel_clears(self):
         self.run_message('/income')
         self.run_message('NaN')

@@ -6,10 +6,10 @@ from decimal import Decimal
 from html import escape
 from zoneinfo import ZoneInfo
 
-from keyboards.inline import inline_keyboard_start, keyboard
+from keyboards.inline import inline_keyboard_start, keyboard, shops_keyboard
 from utils.money import money, parse_amount
 
-ACCOUNTS = {'card': 'Карта', 'cash': 'Наличные'}
+ACCOUNTS = {'kaspi': 'Kaspi', 'halyk': 'Halyk', 'card': 'Карта (без банка)', 'cash': 'Наличные'}
 CATEGORIES = {
     'expense': ['Продукты', 'Транспорт', 'Кафе', 'Дом', 'Здоровье', 'Покупки', 'Развлечения', 'Другое'],
     'income': ['Зарплата', 'Подработка', 'Подарок', 'Начальный остаток', 'Другое'],
@@ -21,6 +21,7 @@ HELP = ('<b>Кошелёк — доходы и расходы</b>\n\n'
         'Счёт и категорию можно выбрать перед сохранением.\n\n'
         '/balance — баланс\n/history — последние операции\n/stats — статистика\n'
         '/income — добавить доход\n/expense — добавить расход\n'
+        '/shops — сайты магазинов\n'
         '/delete 123 — удалить свою операцию с подтверждением\n/cancel — отмена\n\n'
         'Для начального баланса добавьте доход с категорией «Начальный остаток». '
         'Он учитывается в балансе, но не в доходах статистики. '
@@ -34,8 +35,13 @@ class Conversation:
         self.state = request.session()
         self.responses = []
 
-    def reply(self, text, markup=None):
-        self.responses.append({'text': text, 'reply_markup': markup or inline_keyboard_start()})
+    def reply(self, text, markup=None, *, menu=True):
+        response = {'text': text}
+        if markup is None and menu:
+            markup = inline_keyboard_start()
+        if markup is not None:
+            response['reply_markup'] = markup
+        self.responses.append(response)
 
     def buttons(self, rows):
         rows = [[(text, f"flow:{self.state['nonce']}:{value}") for text, value in row] for row in rows]
@@ -50,7 +56,12 @@ class Conversation:
             self.reply('Введите сумму дохода:' if kind == 'income' else 'Введите сумму расхода:', keyboard([[('Отмена', 'cancel')]]))
 
     def ask_account(self):
-        self.reply('Выберите счёт:', self.buttons([[(v, 'account:' + k) for k, v in ACCOUNTS.items()]]))
+        accounts = [(v, 'account:' + k) for k, v in ACCOUNTS.items()]
+        self.reply('Выберите счёт:', self.buttons([accounts[:2], accounts[2:]]))
+
+    def shops(self):
+        self.reply('<b>Магазины</b>\n\nВыберите сайт магазина. '
+                   'Чтобы перейти в другой магазин, вернитесь к этому сообщению.', shops_keyboard())
 
     def ask_category(self):
         categories = CATEGORIES[self.state['kind']]
@@ -123,6 +134,8 @@ class Conversation:
             self.reply('Привет! Здесь можно учитывать доходы и расходы. Выберите действие.' if command == '/start' else 'Добавление отменено.')
         elif command == '/help':
             self.reply(HELP)
+        elif command == '/shops':
+            self.shops()
         elif command == '/balance':
             self.balance()
         elif command == '/history':
@@ -187,6 +200,8 @@ class Conversation:
             self.balance()
         elif data == 'help':
             self.reply(HELP)
+        elif data == 'shops':
+            self.shops()
         elif re.fullmatch(r'history:\d{1,8}', data):
             self.history(int(data.split(':')[1]))
         elif data in ('stats:today', 'stats:month', 'stats:all'):
@@ -218,7 +233,7 @@ class Conversation:
             elif step == 'confirm' and action == 'confirm':
                 transaction_id = self.db.add(self.state)
                 self.state = {}
-                self.reply(f'✅ Операция #{transaction_id} сохранена.')
+                self.reply(f'✅ Операция #{transaction_id} сохранена.', menu=False)
                 self.balance()
             elif step == 'delete' and action == 'delete':
                 deleted = self.db.delete(self.state['id'])

@@ -70,3 +70,41 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual(self.state()['step'], 'confirm')
         self.send(callback=f'flow:{nonce}:confirm')
         self.assertIn('100,25', self.send('/balance')[0]['text'])
+
+    def test_bank_accounts_persist_and_remain_separate(self):
+        for account in ('kaspi', 'halyk'):
+            for kind, amount in (('+', '1000'), ('-', '250')):
+                self.send(f'{kind}{amount} Проверка')
+                nonce = self.state()['nonce']
+                self.send(callback=f'flow:{nonce}:account:{account}')
+                self.send(callback=f'flow:{nonce}:category:0')
+                responses = self.send(callback=f'flow:{nonce}:confirm')
+                self.assertNotIn('reply_markup', responses[0])
+                self.assertIn('reply_markup', responses[1])
+        balance = self.send('/balance')[0]['text']
+        self.assertIn('Kaspi: 750,00', balance)
+        self.assertIn('Halyk: 750,00', balance)
+        with psycopg.connect(self.url) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM wallet_transactions').fetchone()[0], 4)
+
+    def test_migration_preserves_legacy_records_and_pending_session(self):
+        with psycopg.connect(self.url) as conn:
+            conn.execute('ALTER TABLE wallet_transactions DROP CONSTRAINT wallet_transactions_account_check')
+            conn.execute("ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_transactions_account_check CHECK (account IN ('card', 'cash'))")
+        nonce = self.prepare()
+        self.send(callback=f'flow:{nonce}:confirm')
+        self.send('+200 Остаток')
+        pending = self.state()
+        with psycopg.connect(self.url) as conn:
+            before = conn.execute('SELECT * FROM wallet_transactions').fetchall()
+            create_db(conn)
+            create_db(conn)
+            self.assertEqual(conn.execute('SELECT * FROM wallet_transactions').fetchall(), before)
+        self.assertEqual(self.state(), pending)
+        nonce = pending['nonce']
+        self.send(callback=f'flow:{nonce}:account:kaspi')
+        self.send(callback=f'flow:{nonce}:category:0')
+        self.send(callback=f'flow:{nonce}:confirm')
+        balance = self.send('/balance')[0]['text']
+        self.assertIn('Карта (без банка): 100,25', balance)
+        self.assertIn('Kaspi: 200,00', balance)
